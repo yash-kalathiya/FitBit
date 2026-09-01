@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+
+  push:
+    branches:
+      - main
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.12.3"
+          python-version: "3.14"
+          enable-cache: true
+
+      - name: Install locked dependencies
+        run: uv sync --locked
+
+      - name: Compile Python sources
+        run: uv run --no-sync python -m compileall -q src generated
+
+      - name: Verify imports
+        env:
+          PYTHONPATH: ${{ github.workspace }}/generated
+        run: >
+          uv run --no-sync python -c
+          "import fitbit;
+          from google.devicesandservices.health.v4 import data_points_pb2;
+          from google.devicesandservices.health.v4 import data_points_pb2_grpc"
+
+      - name: Build Python wheel
+        run: uv build --wheel --out-dir dist
