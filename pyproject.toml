@@ -1,0 +1,20 @@
+[project]
+name = "fitbit"
+version = "0.1.0"
+description = "Lightweight local analytics over authorized Google Health data"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "google>=3.0.0",
+    "google-api-python-client>=2.199.0",
+    "google-auth-oauthlib>=1.4.1",
+    "grpcio>=1.83.1",
+    "grpcio-tools>=1.83.1",
+]
+
+[project.scripts]
+fitbit = "fitbit.main:main"
+
+[build-system]
+requires = ["uv_build>=0.12.3,<0.13.0"]
+build-backend = "uv_build"

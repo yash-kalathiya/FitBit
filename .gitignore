@@ -5,6 +5,7 @@ __pycache__/
 
 # C extensions
 *.so
+client_secret_88154233671-41ohr072v734gvpuf7q5ms8t0ps7q4lk.apps.googleusercontent.com.json
 
 # Distribution / packaging
 .Python
@@ -151,6 +152,7 @@ activemq-data/
 .env
 .envrc
 .venv
+.secrets/
 env/
 venv/
 ENV/
