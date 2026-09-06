@@ -50,5 +50,8 @@ jobs:
           from google.devicesandservices.health.v4 import data_points_pb2;
           from google.devicesandservices.health.v4 import data_points_pb2_grpc"
 
+      - name: Run unit tests
+        run: uv run --no-sync python -m unittest discover -s tests
+
       - name: Build Python wheel
         run: uv build --wheel --out-dir dist

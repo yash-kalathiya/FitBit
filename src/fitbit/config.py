@@ -8,6 +8,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SECRETS_DIR = Path(os.environ.get("FITBIT_SECRETS_DIR", PROJECT_ROOT / ".secrets"))
+DATA_DIR = Path(os.environ.get("FITBIT_DATA_DIR", PROJECT_ROOT / "db"))
 
 CLIENT_SECRETS_FILE = Path(
     os.environ.get(
@@ -19,6 +20,12 @@ TOKEN_FILE = Path(
     os.environ.get(
         "FITBIT_TOKEN_FILE",
         SECRETS_DIR / "token.json",
+    )
+)
+DATABASE_FILE = Path(
+    os.environ.get(
+        "FITBIT_DATABASE_FILE",
+        DATA_DIR / "fitbit.duckdb",
     )
 )
 

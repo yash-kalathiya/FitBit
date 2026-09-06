@@ -153,6 +153,9 @@ activemq-data/
 .envrc
 .venv
 .secrets/
+/db/
+*.duckdb
+*.duckdb.wal
 env/
 venv/
 ENV/

@@ -15,6 +15,8 @@ container on a daily schedule.
 - Unless the user explicitly asks for implementation, provide guidance, hints,
   review, or diagnosis without editing files.
 - Keep changes small enough for the user to understand and verify manually.
+- Implement at most one focused feature per user request. A feature may modify
+  multiple coordinated files when required to keep the repository consistent.
 - Diagnose from concrete errors and current behavior before proposing broad
   refactors.
 - Do not fabricate Google Health API capabilities, metric meanings, or health
