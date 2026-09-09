@@ -1,0 +1,14 @@
+.git
+.github
+.lwc
+.secrets
+.venv
+.vscode
+db
+dist
+target
+rust/metrics-engine/target
+__pycache__
+*.duckdb
+*.duckdb.wal
+*.pyc

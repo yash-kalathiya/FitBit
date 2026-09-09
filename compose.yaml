@@ -1,0 +1,42 @@
+name: fitbit-local
+
+x-fitbit-service: &fitbit-service
+  image: fitbit-local:latest
+  user: "${FITBIT_UID:-1000}:${FITBIT_GID:-1000}"
+  restart: unless-stopped
+  environment:
+    FITBIT_DATABASE_FILE: /app/db/fitbit.duckdb
+    FITBIT_PARQUET_DIR: /app/db/parquet
+    FITBIT_METRICS_BINARY: /usr/local/bin/fitbit-metrics
+    STREAMLIT_BROWSER_GATHER_USAGE_STATS: "false"
+    TZ: ${TZ:-America/Los_Angeles}
+  volumes:
+    - ./db:/app/db
+
+services:
+  dashboard:
+    <<: *fitbit-service
+    build:
+      context: .
+    volumes:
+      - ./db:/app/db:ro
+    ports:
+      - "127.0.0.1:8080:8080"
+
+  ingestion:
+    <<: *fitbit-service
+    command: ["python", "-m", "fitbit.scheduler"]
+    healthcheck:
+      disable: true
+    environment:
+      FITBIT_DATABASE_FILE: /app/db/fitbit.duckdb
+      FITBIT_PARQUET_DIR: /app/db/parquet
+      FITBIT_SECRETS_DIR: /app/.secrets
+      FITBIT_INGEST_TIMES: ${FITBIT_INGEST_TIMES:-08:00,20:00}
+      FITBIT_INGEST_LOOKBACK_DAYS: ${FITBIT_INGEST_LOOKBACK_DAYS:-7}
+      FITBIT_INGEST_RUN_ON_START: ${FITBIT_INGEST_RUN_ON_START:-true}
+      PYTHONPATH: /app/generated
+      TZ: ${TZ:-America/Los_Angeles}
+    volumes:
+      - ./db:/app/db
+      - ./.secrets:/app/.secrets

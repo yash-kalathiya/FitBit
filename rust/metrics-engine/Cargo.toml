@@ -1,0 +1,17 @@
+[package]
+name = "fitbit-metrics"
+version = "0.1.0"
+edition = "2024"
+description = "Read-only Parquet metrics engine for the local Fitbit dashboard"
+license = "MIT"
+
+[dependencies]
+anyhow = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+duckdb = { version = "~1.10505.0", features = ["bundled", "chrono", "parquet"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[profile.release]
+strip = true
+lto = "thin"
