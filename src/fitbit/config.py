@@ -28,6 +28,12 @@ DATABASE_FILE = Path(
         DATA_DIR / "fitbit.duckdb",
     )
 )
+PARQUET_DIR = Path(
+    os.environ.get(
+        "FITBIT_PARQUET_DIR",
+        DATA_DIR / "parquet",
+    )
+)
 
 GRPC_TARGET = "health.googleapis.com:443"
 

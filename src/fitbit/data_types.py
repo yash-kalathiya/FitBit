@@ -35,19 +35,34 @@ class DataTypeSpec:
 
     api_name: str
     table_name: str
+    filter_field: str
+    page_size: int
     columns: tuple[ColumnSpec, ...]
+    filter_uses_civil_time: bool = False
+    filter_uses_date: bool = False
     table_constraints: tuple[str, ...] = ()
 
-    def create_table_sql(self) -> str:
+    def __post_init__(self) -> None:
+        if self.filter_uses_civil_time and self.filter_uses_date:
+            raise ValueError("a data type cannot use both civil-time and date filters")
+
+    @property
+    def resource_name(self) -> str:
+        """Return the kebab-case identifier used in Google resource paths."""
+        return self.api_name.replace("_", "-")
+
+    def create_table_sql(self, table_name: str | None = None) -> str:
         """Build the idempotent CREATE TABLE statement for this schema."""
         definitions = [column.sql_definition() for column in self.columns]
         definitions.extend(self.table_constraints)
         body = ",\n    ".join(definitions)
-        return f'CREATE TABLE IF NOT EXISTS "{self.table_name}" (\n    {body}\n);'
+        name = table_name or self.table_name
+        return f'CREATE TABLE IF NOT EXISTS "{name}" (\n    {body}\n);'
 
 
 _COMMON_COLUMNS = (
-    ColumnSpec("data_point_name", "VARCHAR", nullable=False, primary_key=True),
+    ColumnSpec("storage_key", "VARCHAR", nullable=False, primary_key=True),
+    ColumnSpec("data_point_name", "VARCHAR"),
     ColumnSpec("recording_method", "VARCHAR"),
     ColumnSpec("source_platform", "VARCHAR"),
     ColumnSpec("source_device_form_factor", "VARCHAR"),
@@ -75,6 +90,8 @@ _SPECS = (
     DataTypeSpec(
         api_name="steps",
         table_name="steps",
+        filter_field="steps.interval.start_time",
+        page_size=1_000,
         columns=(
             _COMMON_COLUMNS
             + _INTERVAL_COLUMNS
@@ -85,6 +102,8 @@ _SPECS = (
     DataTypeSpec(
         api_name="heart_rate",
         table_name="heart_rate",
+        filter_field="heart_rate.sample_time.physical_time",
+        page_size=1_000,
         columns=(
             _COMMON_COLUMNS
             + (
@@ -97,8 +116,59 @@ _SPECS = (
         ),
     ),
     DataTypeSpec(
+        api_name="daily_resting_heart_rate",
+        table_name="daily_resting_heart_rate",
+        filter_field="daily_resting_heart_rate.date",
+        page_size=365,
+        filter_uses_date=True,
+        columns=(
+            _COMMON_COLUMNS
+            + (
+                ColumnSpec("observation_date", "DATE", nullable=False),
+                ColumnSpec("beats_per_minute", "USMALLINT", nullable=False),
+                ColumnSpec("calculation_method", "VARCHAR"),
+            )
+        ),
+    ),
+    DataTypeSpec(
+        api_name="daily_heart_rate_variability",
+        table_name="daily_heart_rate_variability",
+        filter_field="daily_heart_rate_variability.date",
+        page_size=365,
+        filter_uses_date=True,
+        columns=(
+            _COMMON_COLUMNS
+            + (
+                ColumnSpec("observation_date", "DATE", nullable=False),
+                ColumnSpec("average_hrv_milliseconds", "DOUBLE"),
+                ColumnSpec("non_rem_heart_rate_bpm", "DOUBLE"),
+                ColumnSpec("entropy", "DOUBLE"),
+                ColumnSpec("deep_sleep_rmssd_milliseconds", "DOUBLE"),
+            )
+        ),
+    ),
+    DataTypeSpec(
+        api_name="daily_vo2_max",
+        table_name="daily_vo2_max",
+        filter_field="daily_vo2_max.date",
+        page_size=365,
+        filter_uses_date=True,
+        columns=(
+            _COMMON_COLUMNS
+            + (
+                ColumnSpec("observation_date", "DATE", nullable=False),
+                ColumnSpec("vo2_max", "DOUBLE", nullable=False),
+                ColumnSpec("estimated", "BOOLEAN"),
+                ColumnSpec("cardio_fitness_level", "VARCHAR"),
+                ColumnSpec("vo2_max_covariance", "DOUBLE"),
+            )
+        ),
+    ),
+    DataTypeSpec(
         api_name="sleep",
         table_name="sleep",
+        filter_field="sleep.interval.end_time",
+        page_size=25,
         columns=(
             _COMMON_COLUMNS
             + _INTERVAL_COLUMNS
@@ -123,6 +193,9 @@ _SPECS = (
     DataTypeSpec(
         api_name="exercise",
         table_name="exercise",
+        filter_field="exercise.interval.civil_start_time",
+        page_size=25,
+        filter_uses_civil_time=True,
         columns=(
             _COMMON_COLUMNS
             + _INTERVAL_COLUMNS

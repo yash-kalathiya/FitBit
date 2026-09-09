@@ -11,6 +11,8 @@ dependencies = [
     "google-auth-oauthlib>=1.4.1",
     "grpcio>=1.83.1",
     "grpcio-tools>=1.83.1",
+    "pandas>=2.3.3,<3.0.0",
+    "streamlit>=1.49.0,<2.0.0",
 ]
 
 [project.scripts]

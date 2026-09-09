@@ -22,7 +22,7 @@ jobs:
   validate:
     name: validate
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 40
 
     steps:
       - name: Check out repository
@@ -51,7 +51,15 @@ jobs:
           from google.devicesandservices.health.v4 import data_points_pb2_grpc"
 
       - name: Run unit tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}/generated
         run: uv run --no-sync python -m unittest discover -s tests
+
+      - name: Check Rust formatting
+        run: cargo fmt --check --manifest-path rust/metrics-engine/Cargo.toml
+
+      - name: Test Rust metrics engine
+        run: cargo test --release --locked --manifest-path rust/metrics-engine/Cargo.toml
 
       - name: Build Python wheel
         run: uv build --wheel --out-dir dist

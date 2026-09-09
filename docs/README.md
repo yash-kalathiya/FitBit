@@ -9,6 +9,9 @@ decisions, data contracts, and operational procedures.
   delivery phases.
 - [Data pipeline](data-pipeline.md): pagination, normalization, storage, and
   incremental ingestion rules.
+- [Metric definitions](metrics.md): formulas, minimum samples, and limitations.
+- [Local operations](operations.md): Compose services, schedule, Parquet
+  rebuilding, and safe DuckDB editor access.
 
 ## Documentation conventions
 

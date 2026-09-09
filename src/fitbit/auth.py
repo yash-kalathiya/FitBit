@@ -11,8 +11,14 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from fitbit.config import CLIENT_SECRETS_FILE, SCOPES, TOKEN_FILE
 
 
-def get_credentials() -> Credentials:
-    """Load existing OAuth credentials or complete the installed-app flow."""
+def _save_credentials(credentials: Credentials) -> None:
+    """Persist refreshed credentials without logging sensitive values."""
+    TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
+    TOKEN_FILE.write_text(credentials.to_json(), encoding="utf-8")
+
+
+def get_credentials(*, interactive: bool = True) -> Credentials:
+    """Load credentials, optionally allowing an interactive browser flow."""
     credentials = None
 
     if TOKEN_FILE.exists():
@@ -25,16 +31,21 @@ def get_credentials() -> Credentials:
     if credentials and credentials.expired and credentials.refresh_token:
         try:
             credentials.refresh(Request())
+            _save_credentials(credentials)
         except Exception:
             credentials = None
 
     if not credentials or not credentials.valid:
+        if not interactive:
+            raise RuntimeError(
+                "Google Health credentials require interactive authorization; "
+                "run `fitbit backfill --days 1` once on the host"
+            )
         flow = InstalledAppFlow.from_client_secrets_file(
             CLIENT_SECRETS_FILE,
             SCOPES,
         )
         credentials = flow.run_local_server(port=0)
-        TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
-        TOKEN_FILE.write_text(credentials.to_json(), encoding="utf-8")
+        _save_credentials(credentials)
 
     return credentials

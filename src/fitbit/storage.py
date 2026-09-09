@@ -5,16 +5,18 @@ from __future__ import annotations
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Iterator
+from time import sleep
+from typing import Iterable, Iterator, Mapping, Sequence
 from uuid import UUID, uuid4
 
 import duckdb
 
-from fitbit.config import DATABASE_FILE
-from fitbit.data_types import DATA_TYPE_REGISTRY
+from fitbit.config import DATABASE_FILE, PARQUET_DIR
+from fitbit.data_types import DATA_TYPE_REGISTRY, get_data_type_spec
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+LOCK_RETRY_DELAYS_SECONDS = (0.25, 0.5, 1.05, 2.0, 4.0)
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_versions (
@@ -54,37 +56,239 @@ def _as_utc_naive(value: datetime) -> datetime:
 class DuckDBStorage:
     """Own the local DuckDB file and ingestion bookkeeping transactions."""
 
-    def __init__(self, database_file: Path = DATABASE_FILE) -> None:
+    def __init__(
+        self,
+        database_file: Path = DATABASE_FILE,
+        parquet_dir: Path = PARQUET_DIR,
+    ) -> None:
         self.database_file = Path(database_file)
+        self.parquet_dir = Path(parquet_dir)
 
     @contextmanager
-    def connect(self, *, read_only: bool = False) -> Iterator[duckdb.DuckDBPyConnection]:
+    def connect(
+        self,
+        *,
+        read_only: bool = False,
+    ) -> Iterator[duckdb.DuckDBPyConnection]:
         """Open a short-lived connection and always close it."""
         if not read_only:
             self.database_file.parent.mkdir(parents=True, exist_ok=True)
 
-        connection = duckdb.connect(str(self.database_file), read_only=read_only)
+        connection = None
+        for attempt in range(len(LOCK_RETRY_DELAYS_SECONDS) + 1):
+            try:
+                connection = duckdb.connect(
+                    str(self.database_file),
+                    read_only=read_only,
+                )
+                break
+            except duckdb.IOException as error:
+                lock_conflict = "Could not set lock" in str(error)
+                if not lock_conflict or attempt == len(LOCK_RETRY_DELAYS_SECONDS):
+                    raise
+                sleep(LOCK_RETRY_DELAYS_SECONDS[attempt])
+        if connection is None:  # Defensive: the loop either connects or raises.
+            raise RuntimeError("DuckDB connection retry ended unexpectedly")
         try:
             yield connection
         finally:
             connection.close()
 
     def initialize(self) -> None:
-        """Create storage metadata tables without replacing existing data."""
+        """Create or migrate storage without replacing existing health data."""
         with self.connect() as connection:
             connection.execute(_SCHEMA_SQL)
-            for spec in DATA_TYPE_REGISTRY.values():
-                connection.execute(spec.create_table_sql())
-            connection.execute(
+            version_row = connection.execute(
                 """
-                INSERT INTO schema_versions (component, version)
-                VALUES ('storage', ?)
-                ON CONFLICT (component) DO UPDATE
-                SET version = excluded.version,
-                    applied_at = now()
-                """,
-                [SCHEMA_VERSION],
+                SELECT version
+                FROM schema_versions
+                WHERE component = 'storage'
+                """
+            ).fetchone()
+            current_version = version_row[0] if version_row else None
+            if current_version is not None and current_version > SCHEMA_VERSION:
+                raise RuntimeError(
+                    f"database schema {current_version} is newer than supported "
+                    f"schema {SCHEMA_VERSION}"
+                )
+
+            connection.execute("BEGIN TRANSACTION")
+            try:
+                if current_version == 2:
+                    self._migrate_v2_to_v3(connection)
+                for spec in DATA_TYPE_REGISTRY.values():
+                    connection.execute(spec.create_table_sql())
+                connection.execute(
+                    """
+                    INSERT INTO schema_versions (component, version)
+                    VALUES ('storage', ?)
+                    ON CONFLICT (component) DO UPDATE
+                    SET version = excluded.version,
+                        applied_at = now()
+                    """,
+                    [SCHEMA_VERSION],
+                )
+                connection.execute("COMMIT")
+            except Exception:
+                connection.execute("ROLLBACK")
+                raise
+
+    @staticmethod
+    def _migrate_v2_to_v3(connection: duckdb.DuckDBPyConnection) -> None:
+        """Replace name primary keys with deterministic local storage keys."""
+        for spec in DATA_TYPE_REGISTRY.values():
+            columns = {
+                row[0]
+                for row in connection.execute(
+                    """
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_name = ?
+                    """,
+                    [spec.table_name],
+                ).fetchall()
+            }
+            if not columns or "storage_key" in columns:
+                continue
+
+            migration_table = f"__migration_{spec.table_name}_v3"
+            connection.execute(spec.create_table_sql(migration_table))
+            old_columns = [
+                column.name
+                for column in spec.columns
+                if column.name != "storage_key"
+            ]
+            quoted_old_columns = ", ".join(
+                f'"{column}"' for column in old_columns
             )
+            connection.execute(
+                f"""
+                INSERT INTO "{migration_table}" (
+                    storage_key,
+                    {quoted_old_columns}
+                )
+                SELECT
+                    CASE
+                        WHEN data_point_name <> ''
+                            THEN 'google:' || data_point_name
+                        ELSE 'legacy:' || md5(to_base64(raw_protobuf))
+                    END,
+                    {quoted_old_columns}
+                FROM "{spec.table_name}"
+                """
+            )
+            connection.execute(f'DROP TABLE "{spec.table_name}"')
+            connection.execute(
+                f'ALTER TABLE "{migration_table}" RENAME TO "{spec.table_name}"'
+            )
+
+    def upsert_rows(
+        self,
+        data_type: str,
+        rows: Sequence[Mapping[str, object]],
+    ) -> int:
+        """Insert one bounded page and replace rows with the same local key."""
+        if not rows:
+            return 0
+
+        spec = get_data_type_spec(data_type)
+        columns = tuple(
+            column.name for column in spec.columns if column.name != "ingested_at"
+        )
+        expected_columns = set(columns)
+        for row in rows:
+            if set(row) != expected_columns:
+                missing = sorted(expected_columns - set(row))
+                extra = sorted(set(row) - expected_columns)
+                raise ValueError(
+                    f"invalid {data_type} row columns; "
+                    f"missing={missing}, extra={extra}"
+                )
+
+        quoted_columns = ", ".join(f'"{column}"' for column in columns)
+        placeholders = ", ".join("?" for _ in columns)
+        updates = ", ".join(
+            f'"{column}" = excluded."{column}"'
+            for column in columns
+            if column != "storage_key"
+        )
+        statement = f"""
+            INSERT INTO "{spec.table_name}" ({quoted_columns})
+            VALUES ({placeholders})
+            ON CONFLICT (storage_key) DO UPDATE
+            SET {updates}, ingested_at = now()
+        """
+        values = [[row[column] for column in columns] for row in rows]
+
+        with self.connect() as connection:
+            connection.execute("BEGIN TRANSACTION")
+            try:
+                connection.executemany(statement, values)
+                connection.execute("COMMIT")
+            except Exception:
+                connection.execute("ROLLBACK")
+                raise
+        return len(rows)
+
+    def export_parquet(
+        self,
+        data_types: Iterable[str] = DATA_TYPE_REGISTRY,
+    ) -> dict[str, Path]:
+        """Atomically refresh compact per-type Parquet analytics snapshots."""
+        requested = tuple(data_types)
+        specs = tuple(get_data_type_spec(data_type) for data_type in requested)
+        if not specs:
+            return {}
+
+        self.parquet_dir.mkdir(parents=True, exist_ok=True)
+        export_id = uuid4().hex
+        temporary_files = {
+            spec.api_name: self.parquet_dir
+            / f".{spec.table_name}.{export_id}.parquet"
+            for spec in specs
+        }
+
+        try:
+            with self.connect(read_only=True) as connection:
+                connection.execute("BEGIN TRANSACTION")
+                try:
+                    for spec in specs:
+                        columns = [
+                            column.name
+                            for column in spec.columns
+                            if column.name != "raw_protobuf"
+                        ]
+                        quoted_columns = ", ".join(
+                            f'"{column}"' for column in columns
+                        )
+                        output_path = str(
+                            temporary_files[spec.api_name].resolve()
+                        ).replace("'", "''")
+                        connection.execute(
+                            f"""
+                            COPY (
+                                SELECT {quoted_columns}
+                                FROM "{spec.table_name}"
+                            ) TO '{output_path}' (
+                                FORMAT PARQUET,
+                                COMPRESSION ZSTD
+                            )
+                            """
+                        )
+                    connection.execute("COMMIT")
+                except Exception:
+                    connection.execute("ROLLBACK")
+                    raise
+
+            exported: dict[str, Path] = {}
+            for spec in specs:
+                destination = self.parquet_dir / f"{spec.table_name}.parquet"
+                temporary_files[spec.api_name].replace(destination)
+                exported[spec.api_name] = destination
+            return exported
+        finally:
+            for temporary_file in temporary_files.values():
+                temporary_file.unlink(missing_ok=True)
 
     def begin_run(
         self,

@@ -3,20 +3,20 @@
 ## Purpose
 
 Create a lightweight, local-first Fitbit analytics system using authorized
-Google Health API data. The dashboard should emphasize transparent,
-user-defined analysis that is meaningfully different from the standard Fitbit
-or Google Health app.
+Google Health API data. The dashboard emphasizes transparent, user-defined
+analysis that combines signals the standard Fitbit app does not put together.
 
 ## System flow
 
 ```text
 Google Health API (gRPC)
     -> Python authentication and bounded ingestion
-    -> compact local analytical storage
-    -> Rust query and metric engine
-    -> Python binding
+    -> one private DuckDB system of record
+    -> atomic per-type Parquet analytics snapshots
+    -> read-only Rust query and metric executable over in-memory DuckDB
+    -> small JSON response
     -> Streamlit dashboard
-    -> local container and daily scheduler
+    -> dashboard container + twice-daily ingestion sidecar
 ```
 
 ## Component boundaries
@@ -29,21 +29,30 @@ does not fetch health records or calculate metrics.
 ### Python health client and ingestion
 
 Constructs authenticated gRPC clients, applies date filters, follows pagination,
-and converts protobuf records into an internal data contract. It processes one
-page at a time so response history does not accumulate in memory.
+and converts protobuf records into typed rows. It processes one page at a time
+so response history does not accumulate in memory.
 
 ### Local storage
 
-Stores only the fields needed for planned analysis. Compressed Parquet is the
-preferred analytical format. A small state store may track ingestion windows,
-checkpoints, and stable data-point identities. Raw JSON is optional diagnostic
-data with bounded retention, not the primary store.
+Stores normalized, typed fields plus original protobuf bytes in one private
+DuckDB file. The same database contains schema version, ingestion-run
+information, and per-type checkpoints. DuckDB is the only authoritative copy.
+
+After a complete successful ingestion, storage writes the selected typed tables
+to temporary Zstandard-compressed Parquet files and atomically replaces the
+corresponding snapshots. Raw protobuf bytes are intentionally excluded from
+this derived layer. A failed ingestion or export leaves the last usable
+snapshots in place, and all snapshots can be rebuilt from DuckDB.
 
 ### Rust metrics engine
 
-Reads normalized local data and calculates transparent metrics. It should begin
-as a small library rather than a separate network service. A Python binding can
-expose dashboard-oriented functions to Streamlit.
+Creates an in-memory DuckDB connection over the per-type Parquet snapshots,
+deduplicates analytical inputs, and calculates daily strain, fitness age,
+analog-day readiness, sleep opportunity, recovery lag, and sleep regularity. A
+command-line executable emits a bounded JSON document for Streamlit; there is
+no extra network service or duplicate Python formula layer. A direct
+`--database` input remains available for diagnosis, but is not the dashboard
+default.
 
 ### Streamlit dashboard
 
@@ -52,24 +61,23 @@ Google, process protobuf records, or implement core metric formulas.
 
 ### Local operations
 
-The native workflow must work before containerization. The eventual container
-mounts secrets and data at runtime; neither belongs in the image. A host-level
-user timer can trigger bounded daily ingestion.
+Compose runs the same image in two roles. `dashboard` binds only to
+`127.0.0.1:8080`; `ingestion` runs at 08:00 and 20:00 local time. Data is mounted
+into both services and secrets only into ingestion. Only the ingestion service
+opens the persistent DuckDB database during normal operation; the dashboard
+reads atomically replaced Parquet files and does not compete for its writer
+lock.
 
-## Initial delivery phases
+## Delivery and observation phases
 
-1. Separate authentication from one successful gRPC data request.
-2. Add filtered, paginated ingestion for one data type.
-3. Define and write a compact normalized data contract.
-4. Add idempotent daily ingestion and local state.
-5. Implement one transparent Rust metric and expose it to Python.
-6. Build a minimal Streamlit question-and-comparison view.
-7. Add container packaging and a daily local schedule.
+1. Authorize once and complete the initial 120-day backfill.
+2. Validate the Rust report against populated local tables.
+3. Run the Streamlit dashboard and twice-daily sidecar with Compose.
+4. Observe at least 30 complete paired days before interpreting regression.
+5. Add new source types only when a defined metric requires them.
 
 ## Open decisions
 
-- Exact normalized schemas for sleep, activity, and heart metrics.
-- Parquet library and partitioning strategy.
-- Rust analytical library and Python binding interface.
-- Raw diagnostic retention policy.
-- First custom analysis that provides value beyond the Google Health app.
+- Whether raw protobuf retention should become time-bounded after schemas settle.
+- Whether a richer model materially improves held-out prediction over the small
+  regularized regression.
